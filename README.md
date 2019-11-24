@@ -57,7 +57,7 @@ save_xml1 保存为xml格式
 # pbxfunction  
 
 ## 说明  
-这个文件是  
+这个文件是为了扩展pbxtool的功能而存在的  
 
 ## 函数说明  
 add_target 添加target节点，target名字和里面的数据可以自定义，默认是使用脚本中的数据  
