@@ -1,11 +1,8 @@
 #!/usr/local/bin/python3
 #coding=utf-8
-#目标，搞一个pbx的工具库，包含各种基本操作（例如添加target，或者是能更加方便修改某个target的某个选项，添加或者是给源文件改名之类的操作也可以加进来）
 
 import os,sys
 import re
-#还是决定不要使用mod_pbxproj了，自己修改转换出来的json之后搞成python字典的话修改起来效率更高
-# from pbxproj import XcodeProject
 from subprocess import getstatusoutput
 import json
 import copy
@@ -13,10 +10,9 @@ import random
 
 #使用这个键在每个节点存放自己的uuid
 pbxtool_uuid = 'pbxtool_uuid'
-#目标，隐藏uuid
 
 #用于生成自定义的节点的uuid
-def generate_random_str(randomlength=24):
+def generate_random_uuid(randomlength=24):
     """
     生成一个指定长度的随机字符串
     """
@@ -60,12 +56,11 @@ class PbxTool(object):
         super(PbxTool, self).__init__()
         if pbxpath.endswith('.xcodeproj'):
             pbxpath = os.path.join(pbxpath,'project.pbxproj')
-        # self.project = XcodeProject.load(pbxpath)
         status, output = getstatusoutput('plutil -convert json -o - {}'.format(pbxpath))
         if status:
             raise Exception('plutil error: {}'.format(output))
 
-        self.pbxpath = pbxpath
+        self.pbxpath = os.path.abspath(pbxpath)
         self.data = json.loads(output)
         self.objects = self.data['objects']
 
@@ -101,13 +96,11 @@ class PbxTool(object):
                 for key in node:
                     delresult = delete_node_in_other_node(node[key],uuid,delete_node_list)
                     if delresult == None:
-                        # del node[key]
                         delete_node_list.append((node,key))
             elif isinstance(node,list):
                 for i in range(len(node)):
                     delresult = delete_node_in_other_node(node[i],uuid,delete_node_list)
                     if delresult == None:
-                        # del node[i]
                         delete_node_list.append((node,i))
             elif isinstance(node,str):
                 if node == uuid:
@@ -122,11 +115,11 @@ class PbxTool(object):
 
     #添加节点，返回生成节点的uuid
     def add_node(self,nodeContent):
-        uuid = generate_random_str(24)
+        uuid = generate_random_uuid(24)
         while True: #一直生成直到和现有的uuid不重复
             if uuid not in self.objects:
                 break
-            uuid = generate_random_str(24)
+            uuid = generate_random_uuid(24)
         tmp = copy.deepcopy(nodeContent)
         tmp[pbxtool_uuid] = uuid
         self.objects[uuid] = tmp
@@ -225,15 +218,14 @@ class PbxTool(object):
     #获取某个target的编译文件节点列表，在获取的基础上可以获取文件路径，编译选项之类的东西（文件路径可能要专门写个函数来弄）
     def get_build_file_node_list_from_target(self,target_node,isa):
         some_build_phase = self.get_build_phase_node(target_node,isa)
+        if some_build_phase == None:
+            return []
         build_file_node_list = []
         for build_file in some_build_phase['files']:
             build_file_node = self.get_node_by_uuid(build_file)
             build_file_node_list.append(build_file_node)
         return build_file_node_list
 
-    #获取PBXFileReference的文件路径，日后完善实现，这个比较复杂
-    # def get_path_form_file_reference_node(self,file_reference_node):
-    #     return file_reference_node['path']
 
     #获取maingroup节点，可能还需要获取其它group或者是文件的节点
     def get_main_group_node(self):
@@ -241,11 +233,19 @@ class PbxTool(object):
 
     #获取某个group节点下的group节点或者FileReference节点
     def get_group_child_node(self,father_node,node_name):
-        for children in father_node['children']:
-            children_node = self.get_node_by_uuid(children)
-            if 'name' in children_node and children_node['name'] == node_name:
+        for children_uuid in father_node['children']:
+            children_node = self.get_node_by_uuid(children_uuid)
+            if 'name' in children_node and children_node['name'] == node_name or 'path' in children_node and os.path.split(children_node['path'])[1] == node_name:
                 return children_node
         return None
+
+    #获取子节点列表
+    def get_group_child_node_list(self,father_node):
+        children_node_list = []
+        for children_uuid in father_node['children']:
+            children_node = self.get_node_by_uuid(children_uuid)
+            children_node_list.append(children_node)
+        return children_node_list
 
     #查找某个节点在哪个PBXGroup中
     def get_father_node(self,node):
@@ -257,24 +257,29 @@ class PbxTool(object):
         return None
 
     #写一个函数在不停查找自己的母group直到maingroup，只接受sourceTree为<group>的节点
-    def build_group_or_file_reference_path(self,node):
+    def _build_group_or_file_reference_path(self,node):
         #maingroup没有path
+        current_node_path = ''
         if 'path' not in node:
-            return ''
-        current_node_path = node['path']
+            current_node_path = '.'
+        else:
+            current_node_path = node['path']
         father_node = self.get_father_node(node)
         father_node_path = ''
         if father_node == None:
+            #假如node是maingroup的话就会跑到这里
             father_node_path = ''
         elif father_node['sourceTree'] != '<group>': 
-            raise Exception("error, the father node in build_group_or_file_reference_path sourceTree value is %s and not <group>"%father_node['sourceTree'])
+            raise Exception("error, the father node in _build_group_or_file_reference_path sourceTree value is %s and not <group>"%father_node['sourceTree'])
         else:
-            father_node_path = self.build_group_or_file_reference_path(father_node)
+            father_node_path = self._build_group_or_file_reference_path(father_node)
         return os.path.join(father_node_path,current_node_path)
         
     #获取某个fileReference节点的路径（绝对路径），其实也可以获取group的路径
     def get_file_reference_node_path(self,file_reference_node):
-        file_reference_node_path = file_reference_node['path']
+        file_reference_node_path = '.'
+        if 'path' in file_reference_node:
+            file_reference_node_path = file_reference_node['path']
         file_reference_node_uuid = self.get_uuid_by_node(file_reference_node)
 
         #获取工程所在目录
@@ -284,7 +289,7 @@ class PbxTool(object):
         if file_reference_node['sourceTree'] == '<group>':
             #是group中的fileReference节点
             #后一部分的文件路径，以xcode工程所在的根目录为起点
-            last_path = self.build_group_or_file_reference_path(file_reference_node)
+            last_path = self._build_group_or_file_reference_path(file_reference_node)
             return os.path.join(source_root,last_path)
 
         elif file_reference_node['sourceTree'] == 'SOURCE_ROOT':
@@ -337,17 +342,30 @@ class PbxTool(object):
         node_list = []
         for uuid in uuid_list:
             node_list.append(self.get_node_by_uuid(uuid))
-        # node_set = set(node_list)
-        # node_set.remove(None)
         return node_list
 
 
-    #删除没有人依赖的节点，思路和java垃圾清理差不多，在入口建立一颗树，没有被引用到的节点都删掉，可以利用上面的函数
+    #删除没有人依赖的节点
     def clean_unuse_node(self):
         inuse_uuid_list = self.get_uuid_list_depend_by_one_uuid(self.data['rootObject'])
         unuse_uuid_set = set(self.objects) - set(inuse_uuid_list)
         for uuid in unuse_uuid_set:
             del self.objects[uuid]
+
+    def get_uuid_list(self):
+        uuid_list = []
+        for uuid in self.objects:
+            uuid_list.append(uuid)
+        return uuid_list
+
+    def get_pbxpath(self):
+        return self.pbxpath
+
+    def get_data(self):
+        return self.data
+
+    def get_objects(self):
+        return self.objects
 
     #保存
     def save(self,path=None):
@@ -363,65 +381,14 @@ class PbxTool(object):
         except Exception as e:
             print("{} write json error".format(path))
 
-#单元测试
-def unit_test(tool):
-    print('get_node_list_by_isa')
-    print(tool.get_node_list_by_isa(PbxTool.PBXGroup))
-    
-    test_uuid = ''
-    for tem in tool.objects.keys():
-        test_uuid = tem
-
-    print('get_node_by_uuid')
-    print(tool.get_node_by_uuid(test_uuid))
-
-    test_node = tool.objects[test_uuid]
-
-    print('get_uuid_by_node')
-    print(tool.get_uuid_by_node(test_node))
-
-    print('get_project_node')
-    print(tool.get_project_node())
-
-    print('get_target_node')
-    target_node = tool.get_target_node('Unity-iPhone')
-    print(target_node)
-
-    print('get_build_configuration_node')
-    print(tool.get_build_configuration_node(target_node,'Debug'))
-
-    print('get_build_phase_node')
-    build_phase_node = tool.get_build_phase_node(target_node,PbxTool.PBXFrameworksBuildPhase)
-    print(build_phase_node)
-
-    print('get_file_reference_node_from_build_file_node')
-    file_reference_node = tool.get_file_reference_node_from_build_file_node(tool.get_node_list_by_isa('PBXBuildFile')[0])
-    print(file_reference_node)
-
-    print('get_build_file_node_list_from_target')
-    print(tool.get_build_file_node_list_from_target(target_node,PbxTool.PBXSourcesBuildPhase))
-
-    # print('get_path_form_file_reference_node')
-    # path = get_path_form_file_reference_node(file_reference_node)
-
-    print('get_main_group_node')
-    main_group = tool.get_main_group_node()
-    print(main_group)
-
-    print('get_group_child_node')
-    child_node = tool.get_group_child_node(main_group,'Il2CppCodeRegistration.cpp')
-    print(child_node)
-
-    # print('get_file_reference_node_path')
-
-#列出所有编译文件原文件的路径
-def list_all_source_path(tool):
-    target_node = tool.get_target_node('Unity-iPhone')
-    build_file_node_list = tool.get_build_file_node_list_from_target(target_node,PbxTool.PBXSourcesBuildPhase)
-    file_reference_node_list = tool.get_file_reference_node_list_from_build_file_node_list(build_file_node_list)
-    for file_reference_node in file_reference_node_list:
-        print(tool.get_file_reference_node_path(file_reference_node))
-
+    #保存为xml1格式，xcode10及以下版本的xcode也能识别
+    def save_xml1(self,path=None):
+        self.save()
+        if path == None:
+            path = self.pbxpath
+        status, output = getstatusoutput('plutil -convert xml1 "%s"'%path)
+        if status:
+            raise Exception('plutil error: {}'.format(output))
     
 
 if __name__ == '__main__':

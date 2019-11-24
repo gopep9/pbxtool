@@ -5,15 +5,40 @@ from pbxtool import PbxTool
 import json
 import os,sys
 import copy
+import pbxtool
+
 
 #在这里封装各种实用的功能，例如添加一个target
-#第三个参数可以自定义添加的json字符串
+#第三个参数可以自定义添加的json字符串，后续可以设计成不写死uuid
 def add_target(tool,target_name,target_json_str=None):
     json_str = '''
 {"7EFF499623573C8300C4535F": {"isa": "XCBuildConfiguration", "buildSettings": {"LD_RUNPATH_SEARCH_PATHS": ["$(inherited)", "@executable_path/Frameworks"], "INFOPLIST_FILE": "main/Info.plist", "CODE_SIGN_STYLE": "Automatic", "PRODUCT_BUNDLE_IDENTIFIER": "", "ASSETCATALOG_COMPILER_APPICON_NAME": "AppIcon", "TARGETED_DEVICE_FAMILY": "1,2", "PRODUCT_NAME": "$(TARGET_NAME)"}, "name": "Debug"}, "7EFF497B23573C8000C4535F": {"isa": "PBXSourcesBuildPhase", "buildActionMask": "2147483647", "files": [], "runOnlyForDeploymentPostprocessing": "0"}, "7EFF499723573C8300C4535F": {"isa": "XCBuildConfiguration", "buildSettings": {"LD_RUNPATH_SEARCH_PATHS": ["$(inherited)", "@executable_path/Frameworks"], "INFOPLIST_FILE": "main/Info.plist", "CODE_SIGN_STYLE": "Automatic", "PRODUCT_BUNDLE_IDENTIFIER": "", "ASSETCATALOG_COMPILER_APPICON_NAME": "AppIcon", "TARGETED_DEVICE_FAMILY": "1,2", "PRODUCT_NAME": "$(TARGET_NAME)"}, "name": "Release"}, "7EFF497D23573C8000C4535F": {"isa": "PBXResourcesBuildPhase", "buildActionMask": "2147483647", "files": [], "runOnlyForDeploymentPostprocessing": "0"}, "7EFF497E23573C8000C4535F": {"buildConfigurationList": "7EFF499523573C8300C4535F", "productReference": "7EFF497F23573C8000C4535F", "productType": "com.apple.product-type.application", "productName": "main", "isa": "PBXNativeTarget", "buildPhases": ["7EFF497B23573C8000C4535F", "7EFF497C23573C8000C4535F", "7EFF497D23573C8000C4535F"], "dependencies": [], "name": "main", "buildRules": []}, "7EFF497F23573C8000C4535F": {"path": "main.app", "isa": "PBXFileReference", "includeInIndex": "0", "explicitFileType": "wrapper.application", "sourceTree": "BUILT_PRODUCTS_DIR"}, "7EFF499523573C8300C4535F": {"isa": "XCConfigurationList", "defaultConfigurationIsVisible": "0", "defaultConfigurationName": "Release", "buildConfigurations": ["7EFF499623573C8300C4535F", "7EFF499723573C8300C4535F"]}, "7EFF497C23573C8000C4535F": {"isa": "PBXFrameworksBuildPhase", "buildActionMask": "2147483647", "files": [], "runOnlyForDeploymentPostprocessing": "0"}}
 '''
     if target_json_str != None:
         json_str = target_json_str
+
+    #这里跑随机替换uuid的逻辑
+    data = json.loads(json_str)
+    old_uuid_list = []
+    for uuid in data:
+        old_uuid_list.append(uuid)
+    uuid_dict = {}
+    new_uuid_list = []
+    tool_uuid_list = tool.get_uuid_list()
+    for old_uuid in old_uuid_list:
+        new_uuid = pbxtool.generate_random_uuid(24)
+        #假如重复了要再次生成
+        while new_uuid in old_uuid_list or new_uuid in new_uuid_list or new_uuid in tool_uuid_list:
+            print('遇到重复的uuid:')
+            print(new_uuid)
+            new_uuid = pbxtool.generate_random_uuid(24)
+        new_uuid_list.append(new_uuid)
+        uuid_dict[old_uuid] = new_uuid
+    for old_uuid in uuid_dict:
+        new_uuid = uuid_dict[old_uuid]
+        json_str = json_str.replace(old_uuid,new_uuid)
+    
+    #这里加载这个json
     target_data = json.loads(json_str)
     target_node = None
     target_node_uuid = None
@@ -31,7 +56,7 @@ def add_target(tool,target_name,target_json_str=None):
     #配置每个BuildConfiguration
     for build_configuration_uuid in target_data[target_node['buildConfigurationList']]['buildConfigurations']:
         target_data[build_configuration_uuid]['buildSettings']['INFOPLIST_FILE'] = target_name + '/Info.plist'
-    
+
     #遍历添加节点到tool
     for key in target_data:
         tool.add_node_with_uuid(target_data[key],key)
@@ -291,3 +316,131 @@ def copy_build_configuration(tool,target_name,new_build_configuration_name,sourc
         return build_configuration_uuid
     return None
 
+
+#获取target中的某样东西的文件节点路径列表（源码、framework、头文件、资源），里面可能会有none，代表这个东西是子工程或者target生成出来的
+def get_build_phase_path_list_from_target(tool,target_name,isa):
+    target_node = tool.get_target_node(target_name)
+    build_file_node_list = tool.get_build_file_node_list_from_target(target_node,isa)
+    file_reference_node_list = tool.get_file_reference_node_list_from_build_file_node_list(build_file_node_list)
+    path_list = []
+    for file_reference_node in file_reference_node_list:
+        path_list.append(tool.get_file_reference_node_path(file_reference_node))
+    return path_list
+
+#列出这个target依赖的源码文件节点路径列表
+def get_source_path_list_from_target(tool,target_name):
+    return get_build_phase_path_list_from_target(tool,target_name,PbxTool.PBXSourcesBuildPhase)
+
+#列出头文件节点路径列表
+def get_header_path_list_from_target(tool,target_name):
+    return get_build_phase_path_list_from_target(tool,target_name,PbxTool.PBXHeadersBuildPhase)
+
+#列出资源节点路径列表
+def get_resource_path_list_from_target(tool,target_name):
+    return get_build_phase_path_list_from_target(tool,target_name,PbxTool.PBXResourcesBuildPhase)
+
+#列出framework节点路径列表
+def get_framework_path_list_from_target(tool,target_name):
+    return get_build_phase_path_list_from_target(tool,target_name,PbxTool.PBXFrameworksBuildPhase)
+
+#列出framework的暴露出来的头文件
+def get_public_header_path_list_from_target(tool,target_name):
+    target_node = tool.get_target_node(target_name)
+    build_file_node_list = tool.get_build_file_node_list_from_target(target_node,PbxTool.PBXHeadersBuildPhase)
+    public_header_path_list = []
+    for build_file_node in build_file_node_list:
+        if 'settings' in build_file_node and 'ATTRIBUTES' in build_file_node['settings'] and 'Public' in build_file_node['settings']['ATTRIBUTES']:
+            file_reference_node = tool.get_file_reference_node_from_build_file_node(build_file_node)
+            public_header_path_list.append(tool.get_file_reference_node_path(file_reference_node))
+    return public_header_path_list
+
+
+#这里直接获取某个target的product
+def get_product_name_list_from_target(tool,target_name):
+    target_node = tool.get_target_node(target_name)
+    product_name = tool.get_node_by_uuid(target_node['productReference'])['path']
+    return [product_name]
+
+#获取pbx文件所在列表，这里返回的是一个列表（兼容下面的逻辑）
+def get_pbx_path_list_from_target(tool,target_name):
+    # target_node = tool.get_target_node(target_name)
+    return [tool.get_pbxpath()]
+
+
+#遍历target和子target获取某种节点，第三个是个回调函数，决定要添加每个target中的什么东西进去
+#这个函数其实可以更多自定义，获取子target的某些东西
+def get_something_list_from_target_and_dependency(tool,target_name,get_some_thing_list_func,some_thing_list = None):
+    if some_thing_list is None:
+        some_thing_list = []
+    target_node = tool.get_target_node(target_name)
+    #先遍历子target
+    for target_dependency_uuid in target_node['dependencies']:
+        target_dependency_node = tool.get_node_by_uuid(target_dependency_uuid)
+        container_item_proxy_node = tool.get_node_by_uuid(target_dependency_node['targetProxy'])
+        container_portal_node = tool.get_node_by_uuid(container_item_proxy_node['containerPortal'])
+        if container_portal_node['isa'] == PbxTool.PBXProject:
+            #依赖的target还在本工程
+            child_target_node = tool.get_node_by_uuid(container_item_proxy_node['remoteGlobalIDString'])
+            child_target_name = child_target_node['name']
+            get_something_list_from_target_and_dependency(tool,child_target_name,get_some_thing_list_func,some_thing_list)
+        elif container_portal_node['isa'] == PbxTool.PBXFileReference:
+            #依赖的target在其它工程
+            child_project_pbx_path = os.path.join(tool.get_file_reference_node_path(container_portal_node),'project.pbxproj')
+            child_tool = PbxTool(child_project_pbx_path)
+            child_target_node = child_tool.get_node_by_uuid(container_item_proxy_node['remoteGlobalIDString'])
+            child_target_name = child_target_node['name']
+            get_something_list_from_target_and_dependency(child_tool,child_target_name,get_some_thing_list_func,some_thing_list)
+    #添加当前工程的list
+    some_thing_list += get_some_thing_list_func(tool,target_name)
+    return some_thing_list
+
+
+#列出某个target依赖的文件节点以及这个target依赖的子target的文件节点
+#这四个函数和上面四个函数差不多，只不过连依赖的target都获取路径
+def get_source_path_list_from_target_and_dependency(tool,target_name):
+    return list(set(get_something_list_from_target_and_dependency(tool,target_name,get_source_path_list_from_target)))
+
+def get_header_path_list_from_target_and_dependency(tool,target_name):
+    return list(set(get_something_list_from_target_and_dependency(tool,target_name,get_header_path_list_from_target)))
+
+def get_resource_path_list_from_target_and_dependency(tool,target_name):
+    return list(set(get_something_list_from_target_and_dependency(tool,target_name,get_resource_path_list_from_target)))
+
+def get_framework_path_list_from_target_and_dependency(tool,target_name):
+    return list(set(get_something_list_from_target_and_dependency(tool,target_name,get_framework_path_list_from_target)))
+
+#获取某工程及其依赖的target的头文件路径列表
+def get_public_header_path_list_from_target_and_dependency(tool,target_name):
+    return list(set(get_something_list_from_target_and_dependency(tool,target_name,get_public_header_path_list_from_target)))
+
+def get_product_name_list_from_target_and_dependency(tool,target_name):
+    return list(set(get_something_list_from_target_and_dependency(tool,target_name,get_product_name_list_from_target)))
+
+def get_pbx_path_list_from_target_and_dependency(tool,target_name):
+    return list(set(get_something_list_from_target_and_dependency(tool,target_name,get_pbx_path_list_from_target)))
+
+#修改某个filereference的文件名(name和path都改，name可能不存在)，并且修改实际的文件名
+def change_file_reference_name(tool,file_reference_node,new_name):
+    old_path = tool.get_file_reference_node_path(file_reference_node)
+    #这里要考虑三种情况 原来节点有name 有path 有name和path
+    if 'name' in file_reference_node:
+        file_reference_node['name'] = new_name
+    if 'path' in file_reference_node:
+        file_reference_node['path'] = os.path.join(os.path.split(file_reference_node['path'])[0],new_name)
+        new_path = os.path.join(os.path.split(old_path)[0],new_name)
+        #只有在存在真实的path的时候才做重命名逻辑，假如只有name而没有path的话这个节点不对应真实的目录
+        os.rename(old_path,new_path)
+
+#获取某项目依赖的其它项目的工程节点，为多工程混淆作准备
+def get_tool_list_from_target(tool,target_name):
+    target_node = tool.get_target_node(target_name)
+    tool_list = []
+    for target_dependency_uuid in target_node['dependencies']:
+        target_dependency_node = tool.get_node_by_uuid(target_dependency_uuid)
+        container_item_proxy_node = tool.get_node_by_uuid(target_dependency_node['targetProxy'])
+        container_portal_node = tool.get_node_by_uuid(container_item_proxy_node['containerPortal'])
+        if container_portal_node['isa'] == PbxTool.PBXFileReference:
+            child_project_pbx_path = os.path.join(tool.get_file_reference_node_path(container_portal_node),'project.pbxproj')
+            child_tool = PbxTool(child_project_pbx_path)
+            tool_list.append(child_tool)
+    return tool_list
